@@ -1,0 +1,22 @@
+---
+- name: Decommission EC2
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    instance_id: "{{ target_instance }}"
+
+  tasks:
+
+    - name: Stop EC2
+      amazon.aws.ec2_instance:
+        instance_ids:
+          - "{{ instance_id }}"
+        state: stopped
+
+    - name: Terminate EC2
+      amazon.aws.ec2_instance:
+        instance_ids:
+          - "{{ instance_id }}"
+        state: absent
