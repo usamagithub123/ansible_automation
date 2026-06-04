@@ -6,6 +6,7 @@
 
   vars:
     instance_id: "{{ target_instance }}"
+    aws_region: "eu-north-1"
 
   tasks:
 
@@ -13,10 +14,12 @@
       amazon.aws.ec2_instance:
         instance_ids:
           - "{{ instance_id }}"
+        region: "{{ aws_region }}"
         state: stopped
 
     - name: Terminate EC2
       amazon.aws.ec2_instance:
         instance_ids:
           - "{{ instance_id }}"
+        region: "{{ aws_region }}"
         state: absent
