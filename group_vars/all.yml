@@ -1,0 +1,7 @@
+---
+snow_instance: "nowlearning-nlinst04258530-223xm-0001.lab.service-now.com/"
+snow_user: "admin"
+snow_password: "5GUXZaBqc3dd"
+
+default_aws_region: "eu-north-1"
+demo_target_instance: "i-037ee678ff3446a5b"

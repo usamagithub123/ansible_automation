@@ -1,0 +1,13 @@
+---
+- name: Test ServiceNow fetch only
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    cr_number: "{{ cr_number }}"
+
+  tasks:
+    - name: Fetch CR from ServiceNow
+      include_role:
+        name: servicenow_fetch_cr

@@ -1,0 +1,20 @@
+---
+- name: Update Change Request work notes
+  uri:
+    url: "https://{{ snow_instance }}/api/now/table/change_request/{{ cr_sys_id }}"
+    method: PATCH
+    user: "{{ snow_user }}"
+    password: "{{ snow_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      work_notes: "{{ cr_update_message }}"
+  register: cr_update_response
+
+- name: Show CR update result
+  debug:
+    var: cr_update_response.json

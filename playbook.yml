@@ -1,0 +1,31 @@
+---
+- name: Demo CR-based EC2 decommission
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    cr_number: "{{ cr_number }}"
+
+  tasks:
+    - name: Fetch CR from ServiceNow
+      include_role:
+        name: servicenow_fetch_cr
+
+    - block:
+        - name: Decommission EC2 from CR data
+          include_role:
+            name: decommission_ec2
+
+        - name: Update CR success note
+          include_role:
+            name: servicenow_update_cr
+          vars:
+            cr_update_message: "AAP/Ansible demo success: Instance {{ target_instance }} in region {{ aws_region }} was decommissioned."
+
+      rescue:
+        - name: Update CR failure note
+          include_role:
+            name: servicenow_update_cr
+          vars:
+            cr_update_message: "AAP/Ansible demo failed while decommissioning instance for CR {{ cr_number }}. Please check job output."

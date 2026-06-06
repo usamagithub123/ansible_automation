@@ -1,0 +1,26 @@
+---
+- name: Gather EC2 instance info
+  amazon.aws.ec2_instance_info:
+    region: "{{ aws_region }}"
+    instance_ids:
+      - "{{ target_instance }}"
+  register: ec2_info
+
+- name: Fail if instance not found
+  fail:
+    msg: "EC2 instance {{ target_instance }} not found in region {{ aws_region }}"
+  when: ec2_info.instances | length == 0
+
+- name: Stop EC2
+  amazon.aws.ec2_instance:
+    instance_ids:
+      - "{{ target_instance }}"
+    region: "{{ aws_region }}"
+    state: stopped
+
+- name: Terminate EC2
+  amazon.aws.ec2_instance:
+    instance_ids:
+      - "{{ target_instance }}"
+    region: "{{ aws_region }}"
+    state: absent

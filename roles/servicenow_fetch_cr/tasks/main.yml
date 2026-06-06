@@ -1,0 +1,35 @@
+---
+- name: Get Change Request from ServiceNow
+  uri:
+    url: "https://{{ snow_instance }}/api/now/table/change_request?sysparm_query=number={{ cr_number }}&sysparm_limit=1&sysparm_display_value=true&sysparm_exclude_reference_link=true"
+    method: GET
+    user: "{{ snow_user }}"
+    password: "{{ snow_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    headers:
+      Accept: "application/json"
+  register: cr_response
+
+- name: Fail if CR not found
+  fail:
+    msg: "CR {{ cr_number }} not found in ServiceNow"
+  when: cr_response.json.result | length == 0
+
+- name: Save CR values for demo
+  set_fact:
+    cr_record: "{{ cr_response.json.result[0] }}"
+    cr_sys_id: "{{ cr_response.json.result[0].sys_id }}"
+    cr_approval: "{{ cr_response.json.result[0].approval | default('') }}"
+    target_instance: "{{ demo_target_instance }}"
+    aws_region: "{{ default_aws_region }}"
+
+- name: Show fetched values
+  debug:
+    msg:
+      - "CR Number: {{ cr_number }}"
+      - "CR Sys ID: {{ cr_sys_id }}"
+      - "CR Approval: {{ cr_approval }}"
+      - "Target Instance: {{ target_instance }}"
+      - "AWS Region: {{ aws_region }}"
+
