@@ -4,4 +4,4 @@ snow_user: "admin"
 snow_password: "5GUXZaBqc3dd"
 
 default_aws_region: "eu-north-1"
-demo_target_instance: "i-037ee678ff3446a5b"
+demo_target_instance: "i-0a14feb483bb9618b"
