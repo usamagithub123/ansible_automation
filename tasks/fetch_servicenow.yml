@@ -1,45 +1,90 @@
 ---
 - name: Get newest RITM
-  uri:
-    url: "https://{{ snow_instance }}/api/now/table/sc_req_item?sysparm_query=ORDERBYDESCsys_created_on&sysparm_limit=1&sysparm_display_value=true"
+  ansible.builtin.uri:
+    url: "https://{{ snow_instance }}/api/now/table/sc_req_item?sysparm_query=cat_item.name=linux%20service^ORDERBYDESCsys_created_on&sysparm_limit=1&sysparm_display_value=true"
     method: GET
     user: "{{ snow_user }}"
     password: "{{ snow_password }}"
     force_basic_auth: yes
+    headers:
+      Accept: "application/json"
     validate_certs: no
   register: ritm_result
 
-- name: Store RITM sys_id
-  set_fact:
+- name: Fail if no RITM found
+  ansible.builtin.fail:
+    msg: "No RITM found for catalog item linux service"
+  when: ritm_result.json.result | length == 0
+
+- name: Store RITM details
+  ansible.builtin.set_fact:
     ritm_sysid: "{{ ritm_result.json.result[0].sys_id }}"
+    ritm_number: "{{ ritm_result.json.result[0].number }}"
 
-- name: Get variables
-  uri:
-    url: "https://{{ snow_instance }}/api/now/table/sc_item_option_mtom?sysparm_query=request_item={{ ritm_sysid }}"
+- name: Show selected RITM
+  ansible.builtin.debug:
+    msg: "Selected RITM is {{ ritm_number }}"
+
+- name: Get RITM variable mapping
+  ansible.builtin.uri:
+    url: "https://{{ snow_instance }}/api/now/table/sc_item_option_mtom?sysparm_query=request_item={{ ritm_sysid }}&sysparm_display_value=all"
     method: GET
     user: "{{ snow_user }}"
     password: "{{ snow_password }}"
     force_basic_auth: yes
+    headers:
+      Accept: "application/json"
     validate_certs: no
-  register: variable_result
+  register: variable_mapping_result
 
-- name: Store variable sys_id
-  set_fact:
-    variable_sysid: "{{ variable_result.json.result[0].sc_item_option.value }}"
-
-- name: Get username value
-  uri:
-    url: "https://{{ snow_instance }}/api/now/table/sc_item_option/{{ variable_sysid }}"
+- name: Get variable option details
+  ansible.builtin.uri:
+    url: "https://{{ snow_instance }}/api/now/table/sc_item_option/{{ option_sysid }}?sysparm_display_value=all"
     method: GET
     user: "{{ snow_user }}"
     password: "{{ snow_password }}"
     force_basic_auth: yes
+    headers:
+      Accept: "application/json"
     validate_certs: no
-  register: option_result
+  loop: "{{ variable_mapping_result.json.result }}"
+  register: variable_detail_result
+  vars:
+    option_sysid: "{{ item.sc_item_option.value if item.sc_item_option is mapping else item.sc_item_option }}"
+  when:
+    - option_sysid is defined
+    - option_sysid | length > 0
 
-- name: Store username
-  set_fact:
-    username: "{{ option_result.json.result.value }}"
+- name: Show variable option details
+  ansible.builtin.debug:
+    msg: "Question={{ question_name }}, Value={{ candidate_value }}"
+  loop: "{{ variable_detail_result.results }}"
+  vars:
+    question_name: "{{ item.json.result.item_option_new.display_value if item.json.result.item_option_new is mapping else item.json.result.item_option_new | default('UNKNOWN') }}"
+    candidate_value: "{{ item.json.result.value.display_value if item.json.result.value is mapping else item.json.result.value | default('EMPTY') }}"
+  when:
+    - item.json is defined
+    - item.json.result is defined
 
-- debug:
+- name: Store username from valid Linux username value
+  ansible.builtin.set_fact:
+    username: "{{ candidate_username }}"
+  loop: "{{ variable_detail_result.results }}"
+  vars:
+    candidate_username: "{{ item.json.result.value.display_value if item.json.result.value is mapping else item.json.result.value | default('') | trim }}"
+  when:
+    - item.json is defined
+    - item.json.result is defined
+    - candidate_username | length > 0
+    - not (candidate_username is match('^[0-9a-f]{32}$'))
+    - candidate_username is match('^[a-z_][a-z0-9_-]{0,31}$')
+    - username is not defined
+
+- name: Fail if username is empty
+  ansible.builtin.fail:
+    msg: "Username was not found or empty in RITM {{ ritm_number }}"
+  when: username is not defined or username | length == 0
+
+- name: Show username fetched from ServiceNow
+  ansible.builtin.debug:
     msg: "Username fetched from ServiceNow: {{ username }}"
