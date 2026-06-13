@@ -1,0 +1,32 @@
+---
+- name: Fetch Request From ServiceNow
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - include_tasks: tasks/fetch_servicenow.yml
+
+
+- name: Create Linux User
+  hosts: linux_servers
+  become: yes
+
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - include_tasks: tasks/create_linux_user.yml
+
+
+- name: Update ServiceNow
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - include_tasks: tasks/update_servicenow.yml

@@ -1,0 +1,14 @@
+---
+- name: Create user
+  user:
+    name: "{{ hostvars['localhost']['username'] }}"
+    shell: /bin/bash
+    create_home: yes
+    state: present
+
+- name: Verify user
+  command: "id {{ hostvars['localhost']['username'] }}"
+  register: user_info
+
+- debug:
+    var: user_info.stdout

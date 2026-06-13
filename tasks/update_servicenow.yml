@@ -1,0 +1,12 @@
+---
+- name: Update ServiceNow Work Notes
+  uri:
+    url: "https://{{ snow_instance }}/api/now/table/sc_req_item/{{ hostvars['localhost']['ritm_sysid'] }}"
+    method: PATCH
+    user: "{{ snow_user }}"
+    password: "{{ snow_password }}"
+    force_basic_auth: yes
+    validate_certs: no
+    body_format: json
+    body:
+      work_notes: "Linux user {{ hostvars['localhost']['username'] }} created successfully."

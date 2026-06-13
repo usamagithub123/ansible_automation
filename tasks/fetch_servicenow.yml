@@ -1,0 +1,45 @@
+---
+- name: Get newest RITM
+  uri:
+    url: "https://{{ snow_instance }}/api/now/table/sc_req_item?sysparm_query=ORDERBYDESCsys_created_on&sysparm_limit=1&sysparm_display_value=true"
+    method: GET
+    user: "{{ snow_user }}"
+    password: "{{ snow_password }}"
+    force_basic_auth: yes
+    validate_certs: no
+  register: ritm_result
+
+- name: Store RITM sys_id
+  set_fact:
+    ritm_sysid: "{{ ritm_result.json.result[0].sys_id }}"
+
+- name: Get variables
+  uri:
+    url: "https://{{ snow_instance }}/api/now/table/sc_item_option_mtom?sysparm_query=request_item={{ ritm_sysid }}"
+    method: GET
+    user: "{{ snow_user }}"
+    password: "{{ snow_password }}"
+    force_basic_auth: yes
+    validate_certs: no
+  register: variable_result
+
+- name: Store variable sys_id
+  set_fact:
+    variable_sysid: "{{ variable_result.json.result[0].sc_item_option.value }}"
+
+- name: Get username value
+  uri:
+    url: "https://{{ snow_instance }}/api/now/table/sc_item_option/{{ variable_sysid }}"
+    method: GET
+    user: "{{ snow_user }}"
+    password: "{{ snow_password }}"
+    force_basic_auth: yes
+    validate_certs: no
+  register: option_result
+
+- name: Store username
+  set_fact:
+    username: "{{ option_result.json.result.value }}"
+
+- debug:
+    msg: "Username fetched from ServiceNow: {{ username }}"
