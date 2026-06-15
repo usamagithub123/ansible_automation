@@ -1,6 +1,6 @@
 ---
 - name: Fetch Request From ServiceNow
-  hosts: localhost
+  hosts: host
   gather_facts: false
 
   vars_files:
@@ -11,7 +11,7 @@
 
 
 - name: Create Linux User
-  hosts: linux_servers
+  hosts: host
   become: yes
 
   vars_files:
@@ -22,7 +22,7 @@
 
 
 - name: Update ServiceNow
-  hosts: localhost
+  hosts: host
   gather_facts: false
 
   vars_files:
