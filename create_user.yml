@@ -1,7 +1,8 @@
 ---
 - name: Fetch Request From ServiceNow
   hosts: host
-  gather_facts: false
+  gather_facts: true
+  become: yes
 
   vars_files:
     - vars.yml
@@ -23,7 +24,7 @@
 
 - name: Update ServiceNow
   hosts: host
-  gather_facts: false
+  gather_facts: true
 
   vars_files:
     - vars.yml
