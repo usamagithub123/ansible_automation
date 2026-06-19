@@ -1,0 +1,31 @@
+- name: Get CPU usage
+  shell: "top -bn1 | grep 'Cpu(s)' | awk '{print 100 - $8}'"
+  register: cpu
+
+- name: Get Memory usage
+  shell: "free | grep Mem | awk '{print ($3/$2)*100}'"
+  register: memory
+
+- name: Get Disk usage
+  shell: "df -h / | awk 'NR==2 {print $5}' | sed 's/%//'"
+  register: disk
+
+- name: Print results
+  debug:
+    msg:
+      - "CPU Usage: {{ cpu.stdout }}%"
+      - "Memory Usage: {{ memory.stdout | float | round(2) }}%"
+      - "Disk Usage: {{ disk.stdout }}%"
+
+- name: Set health status
+  set_fact:
+    health_status: >-
+      {% if cpu.stdout | float > 80 or memory.stdout | float > 80 or disk.stdout | float > 80 %}
+      UNHEALTHY
+      {% else %}
+      HEALTHY
+      {% endif %}
+
+- name: Final status
+  debug:
+    msg: "Overall Status: {{ health_status }}"
