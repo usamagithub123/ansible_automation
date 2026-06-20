@@ -9,7 +9,7 @@
 
     - name: Get latest Linux Health Check RITM
       uri:
-        url: "https://{{ snow_instance }}/api/now/table/sc_req_item?sysparm_query=cat_item.name=Linux%20Health%20Check^active=true^ORDERBYDESCsys_created_on&sysparm_limit=1"
+        url: "https://{{ snow_instance }}/api/now/table/sc_req_item?sysparm_query=short_descriptionLIKEHealth%20Check^active=true^ORDERBYDESCsys_created_on&sysparm_limit=1"
         method: GET
         user: "{{ snow_username }}"
         password: "{{ snow_password }}"
@@ -17,15 +17,20 @@
         return_content: yes
       register: snow_data
 
-    - name: Show selected RITM
+    - name: Debug RITM response
       debug:
-        msg:
-          - "RITM Number: {{ snow_data.json.result[0].number }}"
-          - "RITM Sys ID: {{ snow_data.json.result[0].sys_id }}"
+        var: snow_data.json
 
-    - name: Extract RITM sys_id
+    - name: Extract RITM details
       set_fact:
         ritm_sys_id: "{{ snow_data.json.result[0].sys_id }}"
+        ritm_number: "{{ snow_data.json.result[0].number }}"
+
+    - name: Show RITM details
+      debug:
+        msg:
+          - "RITM Number: {{ ritm_number }}"
+          - "RITM Sys ID: {{ ritm_sys_id }}"
 
     - name: Get catalog variable link records
       uri:
@@ -37,7 +42,7 @@
         return_content: yes
       register: var_links
 
-    - name: Stop if no variable links found
+    - name: Fail if no variable links found
       fail:
         msg: "No catalog variables found in this RITM"
       when: var_links.json.result | length == 0
@@ -53,7 +58,11 @@
       loop: "{{ var_links.json.result }}"
       register: option_records
 
-    - name: Extract server IP from variable data
+    - name: Debug variable values
+      debug:
+        var: option_records.results
+
+    - name: Extract server IP
       set_fact:
         target_ip: "{{ option_records.results | to_json | regex_search('([0-9]{1,3}\\.){3}[0-9]{1,3}') | default('') }}"
 
@@ -63,10 +72,10 @@
 
     - name: Fail if no IP found
       fail:
-        msg: "❌ enter_server_ip variable not found in ServiceNow"
+        msg: "❌ enter_server_ip variable not found"
       when: target_ip == ""
 
-    # ✅ Use PUBLIC IP for connection (stable)
+    # ✅ Use PUBLIC IP for connection (your working EC2)
     - name: Add dynamic host
       add_host:
         name: dynamic_target
