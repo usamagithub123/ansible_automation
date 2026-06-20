@@ -101,7 +101,7 @@
 - name: Run Health Check
   hosts: dynamic_target
   gather_facts: yes
-  become: yes
+  become: no
 
   vars_files:
     - ../inventory/group_vars/all.yml
