@@ -4,6 +4,9 @@
   become: yes
   serial: 1
   gather_facts: yes
+  vars_files:
+    - ../inventory/group_vars/all.yml
+
 
   tasks:
 
