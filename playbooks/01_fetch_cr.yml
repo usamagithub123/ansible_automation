@@ -1,7 +1,8 @@
 ---
 - name: Fetch latest ServiceNow CR by keyword and create dynamic inventory
   hosts: localhost
-  gather_facts: yes
+  gather_facts: no
+  become : false
 
   tasks:
 
