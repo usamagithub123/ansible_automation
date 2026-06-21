@@ -2,6 +2,9 @@
 - name: Final ServiceNow update
   hosts: localhost
   gather_facts: no
+  
+  vars_files:
+    - ../inventory/group_vars/all.yml
 
   tasks:
 
