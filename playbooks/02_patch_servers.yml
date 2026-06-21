@@ -4,9 +4,9 @@
   become: yes
   serial: 1
   gather_facts: yes
+
   vars_files:
     - ../inventory/group_vars/all.yml
-
 
   tasks:
 
@@ -24,6 +24,10 @@
         msg: "Outside maintenance window. Current time {{ current_time.stdout }}, allowed {{ hostvars['localhost']['maintenance_start'] }} to {{ hostvars['localhost']['maintenance_end'] }}"
       when: current_time.stdout < hostvars['localhost']['maintenance_start'] or current_time.stdout > hostvars['localhost']['maintenance_end']
 
+    - name: Check if inventory host is private IP
+      set_fact:
+        target_is_private_ip: "{{ inventory_hostname is match('^(10\\.|172\\.(1[6-9]|2[0-9]|3[0-1])\\.|192\\.168\\.)') }}"
+
     - block:
 
         - name: Get EC2 instance details using private IP
@@ -33,11 +37,26 @@
               private-ip-address: "{{ inventory_hostname }}"
           delegate_to: localhost
           become: false
-          register: ec2_info
+          register: ec2_info_private
+          when: target_is_private_ip | bool
+
+        - name: Get EC2 instance details using public IP
+          amazon.aws.ec2_instance_info:
+            region: "{{ aws_region }}"
+            filters:
+              ip-address: "{{ inventory_hostname }}"
+          delegate_to: localhost
+          become: false
+          register: ec2_info_public
+          when: not target_is_private_ip | bool
+
+        - name: Set final EC2 instance info
+          set_fact:
+            ec2_info: "{{ ec2_info_private if target_is_private_ip | bool else ec2_info_public }}"
 
         - name: Fail if EC2 instance not found
           fail:
-            msg: "No EC2 instance found for private IP {{ inventory_hostname }}"
+            msg: "No EC2 instance found for IP {{ inventory_hostname }} in region {{ aws_region }}"
           when: ec2_info.instances | length == 0
 
         - name: Set EC2 details
@@ -54,7 +73,7 @@
             name: "prepatch-{{ hostvars['localhost']['cr_number'] }}-{{ inventory_hostname }}-{{ ansible_date_time.date }}-{{ ansible_date_time.time | replace(':','') }}"
             description: "Pre-patch backup for {{ inventory_hostname }} from {{ hostvars['localhost']['cr_number'] }}"
             region: "{{ aws_region }}"
-            wait: "{{ ami_wait }}"
+            wait: "{{ ami_wait | default(true) }}"
             no_reboot: yes
             tags:
               Name: "PrePatchBackup-{{ inventory_hostname }}"
@@ -80,6 +99,7 @@
             body:
               work_notes: |
                 AMI backup created.
+
                 Server: {{ inventory_hostname }}
                 Instance ID: {{ ec2_instance_id }}
                 AMI ID: {{ ami_backup.image_id }}
@@ -110,6 +130,7 @@
           wait_for_connection:
             timeout: 300
             delay: 10
+          when: reboot_required.stat.exists
 
         - name: Health check - uptime
           command: uptime
@@ -135,7 +156,15 @@
               Instance ID: {{ ec2_instance_id }}
               AMI Backup ID: {{ ami_backup.image_id }}
               Status: Patch completed successfully
-              Uptime: {{ uptime_result.stdout }}
+
+              Uptime:
+              {{ uptime_result.stdout }}
+
+              Disk:
+              {{ disk_result.stdout }}
+
+              Memory:
+              {{ memory_result.stdout }}
 
         - name: Update CR work notes - patch success
           uri:
@@ -152,9 +181,11 @@
             body:
               work_notes: |
                 Patching completed successfully.
+
                 Server: {{ inventory_hostname }}
                 Instance ID: {{ ec2_instance_id }}
                 AMI Backup ID: {{ ami_backup.image_id }}
+                Reboot Required: {{ reboot_required.stat.exists }}
                 Uptime: {{ uptime_result.stdout }}
           delegate_to: localhost
           become: false
@@ -176,7 +207,8 @@
             body:
               work_notes: |
                 Patching failed on {{ inventory_hostname }}.
-                Rollback will be attempted if AMI backup exists.
+
+                Rollback will be attempted only if AMI backup exists.
           delegate_to: localhost
           become: false
 
@@ -188,7 +220,8 @@
             key_name: "{{ ec2_key_name }}"
             region: "{{ aws_region }}"
             vpc_subnet_id: "{{ ec2_subnet_id }}"
-            security_group: "{{ ec2_security_group_id }}"
+            security_groups:
+              - "{{ ec2_security_group_id }}"
             wait: yes
             state: running
             tags:
@@ -199,7 +232,13 @@
           delegate_to: localhost
           become: false
           register: rollback_result
-          when: ami_backup is defined and ami_backup.image_id is defined
+          when:
+            - ami_backup is defined
+            - ami_backup.image_id is defined
+            - ec2_instance_type is defined
+            - ec2_key_name is defined
+            - ec2_subnet_id is defined
+            - ec2_security_group_id is defined
 
         - name: Update CR work notes - rollback completed
           uri:
@@ -216,14 +255,42 @@
             body:
               work_notes: |
                 Rollback instance launched.
+
                 Original Server: {{ inventory_hostname }}
-                AMI Used: {{ ami_backup.image_id | default('N/A') }}
+                AMI Used: {{ ami_backup.image_id }}
                 New Instance ID: {{ rollback_result.instances[0].instance_id | default('N/A') }}
                 New Private IP: {{ rollback_result.instances[0].private_ip_address | default('N/A') }}
+                New Public IP: {{ rollback_result.instances[0].public_ip_address | default('N/A') }}
           delegate_to: localhost
           become: false
-          when: rollback_result is defined
+          when:
+            - rollback_result is defined
+            - not rollback_result.skipped | default(false)
+            - rollback_result.instances is defined
+            - rollback_result.instances | length > 0
+
+        - name: Update CR work notes - rollback skipped
+          uri:
+            url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+            method: PATCH
+            user: "{{ snow_username }}"
+            password: "{{ snow_password }}"
+            force_basic_auth: yes
+            validate_certs: yes
+            headers:
+              Content-Type: "application/json"
+              Accept: "application/json"
+            body_format: json
+            body:
+              work_notes: |
+                Rollback skipped.
+
+                Server: {{ inventory_hostname }}
+                Reason: AMI backup or required EC2 details were not available.
+          delegate_to: localhost
+          become: false
+          when: rollback_result is not defined or rollback_result.skipped | default(false)
 
         - name: Fail after rollback
           fail:
-            msg: "Patching failed on {{ inventory_hostname }}. Rollback attempted."
+            msg: "Patching failed on {{ inventory_hostname }}. Rollback checked. See ServiceNow work notes for details."
