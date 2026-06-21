@@ -1,0 +1,130 @@
+---
+- name: Automated Patching with Dynamic AMI Backup
+  hosts: prod_servers
+  become: yes
+  serial: 1
+  gather_facts: yes
+
+  vars:
+    maintenance_start: "00:00"
+    maintenance_end: "23:59"
+    aws_region: "eu-north-1"
+
+  tasks:
+
+    - name: Show target server
+      debug:
+        msg: "Starting AMI backup and patching on {{ inventory_hostname }}"
+
+    - name: Get current server time
+      command: date +"%H:%M"
+      register: current_time
+      changed_when: false
+
+    - name: Check maintenance window
+      fail:
+        msg: "Outside maintenance window. Allowed window is {{ maintenance_start }} to {{ maintenance_end }}"
+      when: current_time.stdout < maintenance_start or current_time.stdout > maintenance_end
+
+    # ✅ Dynamically find EC2 instance ID using target private IP
+    - name: Get EC2 instance details using private IP
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          private-ip-address: "{{ inventory_hostname }}"
+      delegate_to: localhost
+      become: false
+      register: ec2_info
+
+    - name: Fail if EC2 instance not found
+      fail:
+        msg: "No EC2 instance found for private IP {{ inventory_hostname }}"
+      when: ec2_info.instances | length == 0
+
+    - name: Set EC2 instance ID
+      set_fact:
+        ec2_instance_id: "{{ ec2_info.instances[0].instance_id }}"
+
+    - name: Show detected EC2 instance ID
+      debug:
+        msg: "Detected instance ID for {{ inventory_hostname }} is {{ ec2_instance_id }}"
+
+    # ✅ Create AMI backup
+    - name: Create AMI backup before patching
+      amazon.aws.ec2_ami:
+        instance_id: "{{ ec2_instance_id }}"
+        name: "prepatch-backup-{{ inventory_hostname }}-{{ ansible_date_time.date }}-{{ ansible_date_time.time | replace(':','') }}"
+        description: "AMI backup before patching for {{ inventory_hostname }}"
+        region: "{{ aws_region }}"
+        wait: yes
+        no_reboot: yes
+        tags:
+          Name: "PrePatchBackup-{{ inventory_hostname }}"
+          CreatedBy: "Ansible"
+          Purpose: "Rollback"
+      delegate_to: localhost
+      become: false
+      register: ami_backup
+
+    - name: Show AMI backup ID
+      debug:
+        msg: "AMI backup created for {{ inventory_hostname }}: {{ ami_backup.image_id }}"
+
+    - name: Update apt package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Upgrade installed packages
+      apt:
+        upgrade: dist
+
+    - name: Check if reboot is required
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Reboot server if required
+      reboot:
+        msg: "Rebooting after patching"
+        reboot_timeout: 300
+      when: reboot_required.stat.exists
+
+    - name: Wait for server connection after reboot
+      wait_for_connection:
+        timeout: 300
+        delay: 10
+
+    - name: Health check - uptime
+      command: uptime
+      register: uptime_result
+      changed_when: false
+
+    - name: Health check - disk usage
+      command: df -h
+      register: disk_result
+      changed_when: false
+
+    - name: Health check - memory usage
+      command: free -m
+      register: memory_result
+      changed_when: false
+
+    - name: Save patching report on target server
+      copy:
+        dest: /tmp/patching_result.log
+        content: |
+          Server: {{ inventory_hostname }}
+          Instance ID: {{ ec2_instance_id }}
+          AMI Backup ID: {{ ami_backup.image_id }}
+          Status: Patch completed successfully
+          Time: {{ current_time.stdout }}
+          Uptime: {{ uptime_result.stdout }}
+
+    - name: Show patching success message
+      debug:
+        msg:
+          - "✅ Patching completed successfully on {{ inventory_hostname }}"
+          - "✅ Instance ID: {{ ec2_instance_id }}"
+          - "✅ AMI Backup ID: {{ ami_backup.image_id }}"
+          - "Uptime: {{ uptime_result.stdout }}"

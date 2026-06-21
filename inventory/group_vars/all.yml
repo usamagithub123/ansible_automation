@@ -1,0 +1,11 @@
+---
+aws_region: "eu-north-1"
+
+target_ssh_user: "ubuntu"
+target_python: "/usr/bin/python3"
+
+snow_instance: "https://nowlearning-nlinst04289212-3puxr-0001.lab.service-now.com"
+snow_username: "admin"
+snow_password: "9JSCJPNZqpgj"
+snow_cr_keyword: "AUTOMATED_PATCHING_DEMO"
+ami_wait: false

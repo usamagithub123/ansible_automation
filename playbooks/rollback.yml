@@ -1,0 +1,41 @@
+---
+- name: Rollback EC2 using AMI backup
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    aws_region: "eu-north-1"
+    rollback_ami_id: "ami-08b4df1697aea5246"
+    instance_type: "t3.micro"
+    key_name: "ANSIBLE-KEY"
+    subnet_id: "subnet-07f4b323f0eb38698"
+    security_group_id: "sg-047f8849efd49a605"
+
+  tasks:
+
+    - name: Launch new EC2 instance from AMI backup
+      amazon.aws.ec2_instance:
+        name: "rollback-server-from-ami"
+        image_id: "{{ rollback_ami_id }}"
+        instance_type: "{{ instance_type }}"
+        key_name: "{{ key_name }}"
+        region: "{{ aws_region }}"
+        vpc_subnet_id: "{{ subnet_id }}"
+        security_group: "{{ security_group_id }}"
+        wait: yes
+        state: running
+        tags:
+          Name: "Rollback-Restored-Server"
+          CreatedBy: "Ansible"
+          Purpose: "Rollback"
+
+      register: rollback_result
+
+    - name: Show rollback instance details
+      debug:
+        msg:
+          - "✅ Rollback instance launched successfully"
+          - "AMI Used: {{ rollback_ami_id }}"
+          - "New Instance ID: {{ rollback_result.instances[0].instance_id }}"
+          - "Private IP: {{ rollback_result.instances[0].private_ip_address | default('Not assigned yet') }}"

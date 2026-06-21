@@ -1,0 +1,226 @@
+---
+- name: Patch EC2 servers from ServiceNow CR
+  hosts: patch_targets
+  become: yes
+  serial: 1
+  gather_facts: yes
+
+  tasks:
+
+    - name: Show current target
+      debug:
+        msg: "Starting patching on {{ inventory_hostname }} for CR {{ hostvars['localhost']['cr_number'] }}"
+
+    - name: Get current server time
+      command: date +"%H:%M"
+      register: current_time
+      changed_when: false
+
+    - name: Stop if outside maintenance window
+      fail:
+        msg: "Outside maintenance window. Current time {{ current_time.stdout }}, allowed {{ hostvars['localhost']['maintenance_start'] }} to {{ hostvars['localhost']['maintenance_end'] }}"
+      when: current_time.stdout < hostvars['localhost']['maintenance_start'] or current_time.stdout > hostvars['localhost']['maintenance_end']
+
+    - block:
+
+        - name: Get EC2 instance details using private IP
+          amazon.aws.ec2_instance_info:
+            region: "{{ aws_region }}"
+            filters:
+              private-ip-address: "{{ inventory_hostname }}"
+          delegate_to: localhost
+          become: false
+          register: ec2_info
+
+        - name: Fail if EC2 instance not found
+          fail:
+            msg: "No EC2 instance found for private IP {{ inventory_hostname }}"
+          when: ec2_info.instances | length == 0
+
+        - name: Set EC2 details
+          set_fact:
+            ec2_instance_id: "{{ ec2_info.instances[0].instance_id }}"
+            ec2_subnet_id: "{{ ec2_info.instances[0].subnet_id }}"
+            ec2_instance_type: "{{ ec2_info.instances[0].instance_type }}"
+            ec2_key_name: "{{ ec2_info.instances[0].key_name }}"
+            ec2_security_group_id: "{{ ec2_info.instances[0].security_groups[0].group_id }}"
+
+        - name: Create AMI backup before patching
+          amazon.aws.ec2_ami:
+            instance_id: "{{ ec2_instance_id }}"
+            name: "prepatch-{{ hostvars['localhost']['cr_number'] }}-{{ inventory_hostname }}-{{ ansible_date_time.date }}-{{ ansible_date_time.time | replace(':','') }}"
+            description: "Pre-patch backup for {{ inventory_hostname }} from {{ hostvars['localhost']['cr_number'] }}"
+            region: "{{ aws_region }}"
+            wait: "{{ ami_wait }}"
+            no_reboot: yes
+            tags:
+              Name: "PrePatchBackup-{{ inventory_hostname }}"
+              ChangeRequest: "{{ hostvars['localhost']['cr_number'] }}"
+              CreatedBy: "Ansible"
+              Purpose: "Rollback"
+          delegate_to: localhost
+          become: false
+          register: ami_backup
+
+        - name: Update CR work notes - AMI created
+          uri:
+            url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+            method: PATCH
+            user: "{{ snow_username }}"
+            password: "{{ snow_password }}"
+            force_basic_auth: yes
+            validate_certs: yes
+            headers:
+              Content-Type: "application/json"
+              Accept: "application/json"
+            body_format: json
+            body:
+              work_notes: |
+                AMI backup created.
+                Server: {{ inventory_hostname }}
+                Instance ID: {{ ec2_instance_id }}
+                AMI ID: {{ ami_backup.image_id }}
+          delegate_to: localhost
+          become: false
+
+        - name: Update apt package cache
+          apt:
+            update_cache: yes
+            cache_valid_time: 3600
+
+        - name: Upgrade installed packages
+          apt:
+            upgrade: dist
+
+        - name: Check if reboot required
+          stat:
+            path: /var/run/reboot-required
+          register: reboot_required
+
+        - name: Reboot server if required
+          reboot:
+            msg: "Rebooting after patching"
+            reboot_timeout: 300
+          when: reboot_required.stat.exists
+
+        - name: Wait for connection after reboot
+          wait_for_connection:
+            timeout: 300
+            delay: 10
+
+        - name: Health check - uptime
+          command: uptime
+          register: uptime_result
+          changed_when: false
+
+        - name: Health check - disk
+          command: df -h
+          register: disk_result
+          changed_when: false
+
+        - name: Health check - memory
+          command: free -m
+          register: memory_result
+          changed_when: false
+
+        - name: Save patching report on target
+          copy:
+            dest: /tmp/patching_result.log
+            content: |
+              CR: {{ hostvars['localhost']['cr_number'] }}
+              Server: {{ inventory_hostname }}
+              Instance ID: {{ ec2_instance_id }}
+              AMI Backup ID: {{ ami_backup.image_id }}
+              Status: Patch completed successfully
+              Uptime: {{ uptime_result.stdout }}
+
+        - name: Update CR work notes - patch success
+          uri:
+            url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+            method: PATCH
+            user: "{{ snow_username }}"
+            password: "{{ snow_password }}"
+            force_basic_auth: yes
+            validate_certs: yes
+            headers:
+              Content-Type: "application/json"
+              Accept: "application/json"
+            body_format: json
+            body:
+              work_notes: |
+                Patching completed successfully.
+                Server: {{ inventory_hostname }}
+                Instance ID: {{ ec2_instance_id }}
+                AMI Backup ID: {{ ami_backup.image_id }}
+                Uptime: {{ uptime_result.stdout }}
+          delegate_to: localhost
+          become: false
+
+      rescue:
+
+        - name: Update CR work notes - patch failed
+          uri:
+            url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+            method: PATCH
+            user: "{{ snow_username }}"
+            password: "{{ snow_password }}"
+            force_basic_auth: yes
+            validate_certs: yes
+            headers:
+              Content-Type: "application/json"
+              Accept: "application/json"
+            body_format: json
+            body:
+              work_notes: |
+                Patching failed on {{ inventory_hostname }}.
+                Rollback will be attempted if AMI backup exists.
+          delegate_to: localhost
+          become: false
+
+        - name: Launch rollback instance from AMI
+          amazon.aws.ec2_instance:
+            name: "rollback-{{ hostvars['localhost']['cr_number'] }}-{{ inventory_hostname }}"
+            image_id: "{{ ami_backup.image_id }}"
+            instance_type: "{{ ec2_instance_type }}"
+            key_name: "{{ ec2_key_name }}"
+            region: "{{ aws_region }}"
+            vpc_subnet_id: "{{ ec2_subnet_id }}"
+            security_group: "{{ ec2_security_group_id }}"
+            wait: yes
+            state: running
+            tags:
+              Name: "Rollback-{{ inventory_hostname }}"
+              ChangeRequest: "{{ hostvars['localhost']['cr_number'] }}"
+              CreatedBy: "Ansible"
+              Purpose: "Rollback"
+          delegate_to: localhost
+          become: false
+          register: rollback_result
+          when: ami_backup is defined and ami_backup.image_id is defined
+
+        - name: Update CR work notes - rollback completed
+          uri:
+            url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+            method: PATCH
+            user: "{{ snow_username }}"
+            password: "{{ snow_password }}"
+            force_basic_auth: yes
+            validate_certs: yes
+            headers:
+              Content-Type: "application/json"
+              Accept: "application/json"
+            body_format: json
+            body:
+              work_notes: |
+                Rollback instance launched.
+                Original Server: {{ inventory_hostname }}
+                AMI Used: {{ ami_backup.image_id | default('N/A') }}
+                New Instance ID: {{ rollback_result.instances[0].instance_id | default('N/A') }}
+                New Private IP: {{ rollback_result.instances[0].private_ip_address | default('N/A') }}
+          delegate_to: localhost
+          become: false
+          when: rollback_result is defined
+
+        - name: Fail after rollback
+          fail:
+            msg: "Patching failed on {{ inventory_hostname }}. Rollback attempted."

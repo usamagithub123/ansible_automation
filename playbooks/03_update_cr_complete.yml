@@ -1,0 +1,23 @@
+---
+- name: Final ServiceNow update
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+
+    - name: Update CR work notes - automation completed
+      uri:
+        url: "{{ snow_instance }}/api/now/table/change_request/{{ cr_sys_id }}"
+        method: PATCH
+        user: "{{ snow_username }}"
+        password: "{{ snow_password }}"
+        force_basic_auth: yes
+        validate_certs: yes
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          work_notes: |
+            Ansible patching automation completed for CR {{ cr_number }}.
+            Please review server patch logs and AMI backup details.

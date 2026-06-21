@@ -1,0 +1,6 @@
+---
+- import_playbook: 01_fetch_cr.yml
+
+- import_playbook: 02_patch_servers.yml
+
+- import_playbook: 03_update_cr_complete.yml
