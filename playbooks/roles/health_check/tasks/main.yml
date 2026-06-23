@@ -11,6 +11,7 @@
     DIFF_TOTAL=$((TOTAL-PREV_TOTAL))
     awk "BEGIN {printf \"%.2f\", (100 * ($DIFF_TOTAL - $DIFF_IDLE) / $DIFF_TOTAL)}"
   register: cpu_raw
+  changed_when: false
 
 - name: Debug CPU raw output
   debug:
@@ -23,9 +24,17 @@
 
 # ================= MEMORY CHECK =================
 
-- name: Get Memory usage
-  shell: "free | awk '/Mem:/ {printf \"%.2f\", ($3/$2)*100}'"
+- name: Get Memory usage using /proc/meminfo
+  shell: |
+    awk '
+    /MemTotal/ {total=$2}
+    /MemAvailable/ {available=$2}
+    END {
+      used=total-available;
+      printf "%.2f", (used/total)*100
+    }' /proc/meminfo
   register: mem_raw
+  changed_when: false
 
 - name: Debug Memory raw output
   debug:
@@ -41,6 +50,7 @@
 - name: Get Disk usage
   shell: "df -h / | awk 'NR==2 {print $5}' | sed 's/%//'"
   register: disk_raw
+  changed_when: false
 
 - name: Debug Disk raw output
   debug:
@@ -75,3 +85,4 @@
 - name: Final status
   debug:
     msg: "Overall Status: {{ health_status }}"
+``
