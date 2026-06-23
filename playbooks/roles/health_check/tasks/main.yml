@@ -85,4 +85,3 @@
 - name: Final status
   debug:
     msg: "Overall Status: {{ health_status }}"
-``
