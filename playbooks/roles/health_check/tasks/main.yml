@@ -1,26 +1,64 @@
+# ================= CPU =================
+
 - name: Get CPU usage
   shell: "top -bn1 | grep 'Cpu(s)' | awk '{print 100 - $8}'"
-  register: cpu
+  register: cpu_raw
+
+- name: Debug CPU output
+  debug:
+    msg: "CPU RAW: {{ cpu_raw.stdout }}"
+
+- name: Set CPU usage
+  set_fact:
+    cpu_usage: "{{ (cpu_raw.stdout | default('0')) | float | round(2) }}"
+
+
+# ================= MEMORY =================
 
 - name: Get Memory usage
   shell: "free | grep Mem | awk '{print ($3/$2)*100}'"
-  register: memory
+  register: mem_raw
+
+- name: Debug memory output
+  debug:
+    msg: "MEM RAW: {{ mem_raw.stdout }}"
+
+- name: Set Memory usage
+  set_fact:
+    memory_usage: "{{ (mem_raw.stdout | default('0')) | float | round(2) }}"
+
+
+# ================= DISK =================
 
 - name: Get Disk usage
   shell: "df -h / | awk 'NR==2 {print $5}' | sed 's/%//'"
-  register: disk
+  register: disk_raw
+
+- name: Debug disk output
+  debug:
+    msg: "DISK RAW: {{ disk_raw.stdout }}"
+
+- name: Set Disk usage
+  set_fact:
+    disk_usage: "{{ (disk_raw.stdout | default('0')) | float }}"
+
+
+# ================= PRINT =================
 
 - name: Print results
   debug:
     msg:
-      - "CPU Usage: {{ cpu.stdout }}%"
-      - "Memory Usage: {{ memory.stdout | float | round(2) }}%"
-      - "Disk Usage: {{ disk.stdout }}%"
+      - "CPU Usage: {{ cpu_usage }}%"
+      - "Memory Usage: {{ memory_usage }}%"
+      - "Disk Usage: {{ disk_usage }}%"
+
+
+# ================= HEALTH =================
 
 - name: Set health status
   set_fact:
     health_status: >-
-      {% if cpu.stdout | float > 80 or memory.stdout | float > 80 or disk.stdout | float > 80 %}
+      {% if cpu_usage > 80 or memory_usage > 80 or disk_usage > 85 %}
       UNHEALTHY
       {% else %}
       HEALTHY
