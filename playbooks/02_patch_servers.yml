@@ -73,7 +73,7 @@
             name: "prepatch-{{ hostvars['localhost']['cr_number'] }}-{{ inventory_hostname }}-{{ ansible_date_time.date }}-{{ ansible_date_time.time | replace(':','') }}"
             description: "Pre-patch backup for {{ inventory_hostname }} from {{ hostvars['localhost']['cr_number'] }}"
             region: "{{ aws_region }}"
-            wait: "{{ ami_wait | default(true) }}"
+            wait: "{{ ami_wait | default(false) }}"
             no_reboot: yes
             tags:
               Name: "PrePatchBackup-{{ inventory_hostname }}"
@@ -98,13 +98,80 @@
             body_format: json
             body:
               work_notes: |
-                AMI backup created.
+                AMI backup created before patching.
 
                 Server: {{ inventory_hostname }}
                 Instance ID: {{ ec2_instance_id }}
                 AMI ID: {{ ami_backup.image_id }}
           delegate_to: localhost
           become: false
+
+        #################################################################
+        # PRE HEALTH CHECK
+        #################################################################
+
+        - name: Pre health check - CPU usage percentage
+          shell: "vmstat 1 2 | tail -1 | awk '{print 100 - $15}'"
+          register: pre_cpu
+          changed_when: false
+
+        - name: Pre health check - Memory usage percentage
+          shell: "free | awk '/Mem:/ {printf \"%.2f\", $3/$2 * 100}'"
+          register: pre_memory
+          changed_when: false
+
+        - name: Pre health check - Disk usage percentage for root
+          shell: "df -P / | awk 'NR==2 {gsub(\"%\", \"\", $5); print $5}'"
+          register: pre_disk
+          changed_when: false
+
+        - name: Pre health check - Uptime
+          command: uptime -p
+          register: pre_uptime
+          changed_when: false
+
+        - name: Pre health check - Kernel version
+          command: uname -r
+          register: pre_kernel
+          changed_when: false
+
+        - name: Store pre health values
+          set_fact:
+            pre_health:
+              cpu: "{{ pre_cpu.stdout | default('0') }}"
+              memory: "{{ pre_memory.stdout | default('0') }}"
+              disk: "{{ pre_disk.stdout | default('0') }}"
+              uptime: "{{ pre_uptime.stdout | default('N/A') }}"
+              kernel: "{{ pre_kernel.stdout | default('N/A') }}"
+
+        - name: Update CR work notes - pre health check completed
+          uri:
+            url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+            method: PATCH
+            user: "{{ snow_username }}"
+            password: "{{ snow_password }}"
+            force_basic_auth: yes
+            validate_certs: yes
+            headers:
+              Content-Type: "application/json"
+              Accept: "application/json"
+            body_format: json
+            body:
+              work_notes: |
+                Pre-health check completed before patching.
+
+                Server: {{ inventory_hostname }}
+                CPU Usage: {{ pre_health.cpu }}%
+                Memory Usage: {{ pre_health.memory }}%
+                Disk Usage: {{ pre_health.disk }}%
+                Uptime: {{ pre_health.uptime }}
+                Kernel Version: {{ pre_health.kernel }}
+          delegate_to: localhost
+          become: false
+
+        #################################################################
+        # PATCHING
+        #################################################################
 
         - name: Update apt package cache
           apt:
@@ -132,39 +199,147 @@
             delay: 10
           when: reboot_required.stat.exists
 
-        - name: Health check - uptime
-          command: uptime
-          register: uptime_result
+        #################################################################
+        # POST HEALTH CHECK
+        #################################################################
+
+        - name: Post health check - CPU usage percentage
+          shell: "vmstat 1 2 | tail -1 | awk '{print 100 - $15}'"
+          register: post_cpu
           changed_when: false
 
-        - name: Health check - disk
-          command: df -h
-          register: disk_result
+        - name: Post health check - Memory usage percentage
+          shell: "free | awk '/Mem:/ {printf \"%.2f\", $3/$2 * 100}'"
+          register: post_memory
           changed_when: false
 
-        - name: Health check - memory
-          command: free -m
-          register: memory_result
+        - name: Post health check - Disk usage percentage for root
+          shell: "df -P / | awk 'NR==2 {gsub(\"%\", \"\", $5); print $5}'"
+          register: post_disk
           changed_when: false
+
+        - name: Post health check - Uptime
+          command: uptime -p
+          register: post_uptime
+          changed_when: false
+
+        - name: Post health check - Kernel version
+          command: uname -r
+          register: post_kernel
+          changed_when: false
+
+        - name: Store post health values
+          set_fact:
+            post_health:
+              cpu: "{{ post_cpu.stdout | default('0') }}"
+              memory: "{{ post_memory.stdout | default('0') }}"
+              disk: "{{ post_disk.stdout | default('0') }}"
+              uptime: "{{ post_uptime.stdout | default('N/A') }}"
+              kernel: "{{ post_kernel.stdout | default('N/A') }}"
+
+        #################################################################
+        # COMPARE PRE AND POST HEALTH
+        #################################################################
+
+        - name: Compare pre and post health values
+          set_fact:
+            cpu_difference: "{{ (post_health.cpu | float) - (pre_health.cpu | float) }}"
+            memory_difference: "{{ (post_health.memory | float) - (pre_health.memory | float) }}"
+            disk_difference: "{{ (post_health.disk | int) - (pre_health.disk | int) }}"
+
+        - name: Set final health status
+          set_fact:
+            health_status: >-
+              {{
+                'PASSED'
+                if
+                (post_health.cpu | float) < 90 and
+                (post_health.memory | float) < 90 and
+                (post_health.disk | int) < 90
+                else
+                'FAILED'
+              }}
 
         - name: Save patching report on target
           copy:
             dest: /tmp/patching_result.log
             content: |
-              CR: {{ hostvars['localhost']['cr_number'] }}
+              Change Request: {{ hostvars['localhost']['cr_number'] }}
               Server: {{ inventory_hostname }}
               Instance ID: {{ ec2_instance_id }}
               AMI Backup ID: {{ ami_backup.image_id }}
-              Status: Patch completed successfully
 
-              Uptime:
-              {{ uptime_result.stdout }}
+              Patch Status: Completed
+              Health Status: {{ health_status }}
+              Reboot Required: {{ reboot_required.stat.exists }}
 
-              Disk:
-              {{ disk_result.stdout }}
+              -------- PRE HEALTH CHECK --------
+              CPU Usage: {{ pre_health.cpu }}%
+              Memory Usage: {{ pre_health.memory }}%
+              Disk Usage: {{ pre_health.disk }}%
+              Uptime: {{ pre_health.uptime }}
+              Kernel Version: {{ pre_health.kernel }}
 
-              Memory:
-              {{ memory_result.stdout }}
+              -------- POST HEALTH CHECK --------
+              CPU Usage: {{ post_health.cpu }}%
+              Memory Usage: {{ post_health.memory }}%
+              Disk Usage: {{ post_health.disk }}%
+              Uptime: {{ post_health.uptime }}
+              Kernel Version: {{ post_health.kernel }}
+
+              -------- COMPARISON --------
+              CPU Difference: {{ cpu_difference }}%
+              Memory Difference: {{ memory_difference }}%
+              Disk Difference: {{ disk_difference }}%
+
+        - name: Update CR work notes - post health comparison completed
+          uri:
+            url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+            method: PATCH
+            user: "{{ snow_username }}"
+            password: "{{ snow_password }}"
+            force_basic_auth: yes
+            validate_certs: yes
+            headers:
+              Content-Type: "application/json"
+              Accept: "application/json"
+            body_format: json
+            body:
+              work_notes: |
+                Post-health check and comparison completed.
+
+                Server: {{ inventory_hostname }}
+                Instance ID: {{ ec2_instance_id }}
+                AMI Backup ID: {{ ami_backup.image_id }}
+                Reboot Required: {{ reboot_required.stat.exists }}
+
+                Health Status: {{ health_status }}
+
+                Pre Health:
+                - CPU Usage: {{ pre_health.cpu }}%
+                - Memory Usage: {{ pre_health.memory }}%
+                - Disk Usage: {{ pre_health.disk }}%
+                - Uptime: {{ pre_health.uptime }}
+                - Kernel Version: {{ pre_health.kernel }}
+
+                Post Health:
+                - CPU Usage: {{ post_health.cpu }}%
+                - Memory Usage: {{ post_health.memory }}%
+                - Disk Usage: {{ post_health.disk }}%
+                - Uptime: {{ post_health.uptime }}
+                - Kernel Version: {{ post_health.kernel }}
+
+                Comparison:
+                - CPU Difference: {{ cpu_difference }}%
+                - Memory Difference: {{ memory_difference }}%
+                - Disk Difference: {{ disk_difference }}%
+          delegate_to: localhost
+          become: false
+
+        - name: Fail if post health check failed
+          fail:
+            msg: "Post health check failed on {{ inventory_hostname }}. Rollback will be attempted."
+          when: health_status == "FAILED"
 
         - name: Update CR work notes - patch success
           uri:
@@ -185,14 +360,14 @@
                 Server: {{ inventory_hostname }}
                 Instance ID: {{ ec2_instance_id }}
                 AMI Backup ID: {{ ami_backup.image_id }}
-                Reboot Required: {{ reboot_required.stat.exists }}
-                Uptime: {{ uptime_result.stdout }}
+                Final Health Status: {{ health_status }}
+                Rollback Required: No
           delegate_to: localhost
           become: false
 
       rescue:
 
-        - name: Update CR work notes - patch failed
+        - name: Update CR work notes - patch or health check failed
           uri:
             url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
             method: PATCH
@@ -206,9 +381,9 @@
             body_format: json
             body:
               work_notes: |
-                Patching failed on {{ inventory_hostname }}.
+                Patching or health check failed on {{ inventory_hostname }}.
 
-                Rollback will be attempted only if AMI backup exists.
+                Rollback will be attempted only if AMI backup and EC2 details are available.
           delegate_to: localhost
           become: false
 
