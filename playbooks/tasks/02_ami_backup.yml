@@ -1,0 +1,153 @@
+---
+- block:
+
+    - name: Create AMI backup before patching
+      amazon.aws.ec2_ami:
+        instance_id: "{{ ec2_instance_id }}"
+        name: "prepatch-{{ hostvars['localhost']['cr_number'] }}-{{ server_name | default(inventory_hostname) }}-{{ ansible_date_time.date }}-{{ ansible_date_time.time | replace(':','') }}"
+        description: "Pre-patch backup for {{ server_name | default(inventory_hostname) }} from {{ hostvars['localhost']['cr_number'] }}"
+        region: "{{ aws_region }}"
+        wait: "{{ ami_wait | default(false) }}"
+        no_reboot: yes
+        tags:
+          Name: "PrePatchBackup-{{ server_name | default(inventory_hostname) }}"
+          ChangeRequest: "{{ hostvars['localhost']['cr_number'] }}"
+          CreatedBy: "Ansible"
+          Purpose: "Rollback"
+      delegate_to: localhost
+      become: false
+      register: ami_backup
+
+    - name: Update CR work notes - AMI backup created
+      uri:
+        url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+        method: PATCH
+        user: "{{ snow_username }}"
+        password: "{{ snow_password }}"
+        force_basic_auth: yes
+        validate_certs: yes
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          work_notes: |
+            AMI backup created before patching.
+
+            Server Name: {{ server_name | default('N/A') }}
+            Target IP: {{ inventory_hostname }}
+            Instance ID: {{ ec2_instance_id }}
+            AMI ID: {{ ami_backup.image_id }}
+            Application Owner: {{ application_owner_email | default('N/A') }}
+
+            Automation will continue to patching.
+      delegate_to: localhost
+      become: false
+
+  rescue:
+
+    - name: Update CR work notes - AMI backup failed
+      uri:
+        url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+        method: PATCH
+        user: "{{ snow_username }}"
+        password: "{{ snow_password }}"
+        force_basic_auth: yes
+        validate_certs: yes
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          work_notes: |
+            AMI backup failed before patching.
+
+            Server Name: {{ server_name | default('N/A') }}
+            Target IP: {{ inventory_hostname }}
+            Instance ID: {{ ec2_instance_id | default('N/A') }}
+            Application Owner: {{ application_owner_email | default('N/A') }}
+
+            Action:
+            Patching stopped for this server.
+            Rollback is not possible because AMI backup was not created.
+            ServiceNow Incident will be created for investigation.
+      delegate_to: localhost
+      become: false
+
+    - name: Create ServiceNow Incident for AMI backup failure
+      uri:
+        url: "{{ snow_instance }}/api/now/table/incident"
+        method: POST
+        user: "{{ snow_username }}"
+        password: "{{ snow_password }}"
+        force_basic_auth: yes
+        validate_certs: yes
+        status_code:
+          - 200
+          - 201
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          short_description: "AMI backup failed before patching on {{ server_name | default(inventory_hostname) }}"
+          description: |
+            AMI backup failed before patching.
+
+            Change Request: {{ hostvars['localhost']['cr_number'] }}
+            Server Name: {{ server_name | default('N/A') }}
+            Target IP: {{ inventory_hostname }}
+            EC2 Instance ID: {{ ec2_instance_id | default('N/A') }}
+            Application Owner: {{ application_owner_email | default('N/A') }}
+
+            Patching was stopped because AMI backup failed.
+            Rollback is not possible because rollback AMI was not created.
+
+            Required Action:
+            Please investigate AWS AMI/EBS snapshot creation issue.
+          impact: "2"
+          urgency: "2"
+          category: "software"
+          work_notes: |
+            Incident created automatically by Ansible Automation Platform.
+
+            Failure Stage: AMI backup
+            Related Change Request: {{ hostvars['localhost']['cr_number'] }}
+            Failed Server: {{ server_name | default(inventory_hostname) }}
+      delegate_to: localhost
+      become: false
+      register: ami_failure_incident
+
+    - name: Store AMI failure Incident details
+      set_fact:
+        ami_failure_incident_number: "{{ ami_failure_incident.json.result.number | default('N/A') }}"
+        ami_failure_incident_sys_id: "{{ ami_failure_incident.json.result.sys_id | default('') }}"
+
+    - name: Update CR work notes with AMI failure Incident number
+      uri:
+        url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+        method: PATCH
+        user: "{{ snow_username }}"
+        password: "{{ snow_password }}"
+        force_basic_auth: yes
+        validate_certs: yes
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          work_notes: |
+            ServiceNow Incident created for AMI backup failure.
+
+            Change Request: {{ hostvars['localhost']['cr_number'] }}
+            Server Name: {{ server_name | default('N/A') }}
+            Target IP: {{ inventory_hostname }}
+            Incident Number: {{ ami_failure_incident_number }}
+
+            Patching stopped before package update.
+            Rollback was not triggered because AMI backup was not created.
+      delegate_to: localhost
+      become: false
+
+    - name: Stop patching for this host because AMI backup failed
+      meta: end_host

@@ -1,19 +1,20 @@
 ---
-- name: Fetch latest ServiceNow CR by keyword and create dynamic inventory
+- name: Fetch latest ServiceNow CR and read servers from CSV
   hosts: localhost
   gather_facts: no
-  become : false
-  
+  become: false
+
   vars:
     snow_instance: "https://nowlearning-nlinst04289212-3puxr-0001.lab.service-now.com"
     snow_username: "admin"
     snow_password: "9JSCJPNZqpgj"
     snow_cr_keyword: "AUTOMATED_PATCHING_DEMO"
-    aws_region: "eu-north-1"
+
     target_ssh_user: "ubuntu"
     target_python: "/usr/bin/python3"
-    ami_wait: false
 
+    maintenance_start: "00:00"
+    maintenance_end: "23:59"
 
   tasks:
 
@@ -41,57 +42,122 @@
         cr_sys_id: "{{ snow_cr_response.json.result[0].sys_id }}"
         cr_number: "{{ snow_cr_response.json.result[0].number }}"
         cr_description: "{{ snow_cr_response.json.result[0].description | default('') }}"
+        maintenance_start: "{{ maintenance_start }}"
+        maintenance_end: "{{ maintenance_end }}"
 
-    - name: Extract target servers from CR description
-      set_fact:
-        target_servers_raw: "{{ (cr_description | regex_findall('(?im)^\\s*Target servers\\s*=\\s*([^\\r\\n]+)') | first) | default('') }}"
+    - name: Read server owner details from CSV
+      community.general.read_csv:
+        path: "{{ playbook_dir }}/../inventory/server_owner_details.csv"
+      register: server_csv
 
-    - name: Extract maintenance window from CR description
-      set_fact:
-        maintenance_window_raw: "{{ (cr_description | regex_findall('(?im)^\\s*Maintenance window\\s*=\\s*([^\\r\\n]+)') | first) | default('00:00 to 23:59') }}"
-
-    - name: Extract patch type from CR description
-      set_fact:
-        patch_type: "{{ (cr_description | regex_findall('(?im)^\\s*Patch type\\s*=\\s*([^\\r\\n]+)') | first) | default('full') }}"
-
-    - name: Extract rollback required value from CR description
-      set_fact:
-        rollback_required: "{{ (cr_description | regex_findall('(?im)^\\s*Rollback required\\s*=\\s*([^\\r\\n]+)') | first) | default('true') }}"
-
-    - name: Split maintenance window into start and end time
-      set_fact:
-        maintenance_start: "{{ maintenance_window_raw.split('to')[0] | trim }}"
-        maintenance_end: "{{ (maintenance_window_raw.split('to')[1] | trim) if ('to' in maintenance_window_raw) else '23:59' }}"
-
-    - name: Convert target servers string into list
-      set_fact:
-        target_servers: "{{ target_servers_raw.split(',') | map('trim') | reject('equalto', '') | list }}"
-
-    - name: Fail if target servers are missing
+    - name: Fail if CSV file is empty
       fail:
-        msg: "No Target servers found in CR Description. Add: Target servers = 172.31.40.87,172.31.43.241"
-      when: target_servers | length == 0
+        msg: "server_owner_details.csv is empty or not readable"
+      when: server_csv.list | length == 0
 
-    - name: Show extracted CR values
+    - name: Store server rows from CSV
+      set_fact:
+        server_rows: "{{ server_csv.list }}"
+
+    - name: Fail if server IP is missing in Cluster Details
+      fail:
+        msg: "Missing ip= value in Cluster Details for server {{ item['Server Name'] }}"
+      when: (item['Cluster Details'] | regex_findall('ip=([^\\s|]+)') | length) == 0
+      loop: "{{ server_rows }}"
+
+    - name: Show servers loaded from CSV
       debug:
         msg:
-          - "Fetched CR dynamically using keyword: {{ snow_cr_keyword }}"
           - "CR Number: {{ cr_number }}"
-          - "Target Servers: {{ target_servers }}"
-          - "Maintenance Window: {{ maintenance_start }} to {{ maintenance_end }}"
-          - "Patch Type: {{ patch_type }}"
-          - "Rollback Required: {{ rollback_required }}"
+          - "Servers loaded from CSV: {{ server_rows | length }}"
 
-    - name: Add target servers dynamically to Ansible group
+    - name: Add CSV servers dynamically to patch_targets group
       add_host:
-        name: "{{ item }}"
+        name: "{{ item['Cluster Details'] | regex_findall('ip=([^\\s|]+)') | first }}"
         groups: patch_targets
+        ansible_connection: ssh
         ansible_user: "{{ target_ssh_user }}"
         ansible_python_interpreter: "{{ target_python }}"
         ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
-      loop: "{{ target_servers }}"
 
-    - name: Update CR work notes - automation started
+        server_name: "{{ item['Server Name'] }}"
+        ec2_instance_id_from_csv: "{{ item['Server ID'] }}"
+        application_owner_name: "{{ item['Application Owner Name'] }}"
+        application_owner_email: "{{ item['Application Owner Details'] }}"
+        cluster_details: "{{ item['Cluster Details'] }}"
+      loop: "{{ server_rows }}"
+
+    - name: Prepare unique application owner email list
+      set_fact:
+        application_owner_emails: "{{ server_rows | map(attribute='Application Owner Details') | unique | list }}"
+
+    - name: Show email recipients
+      debug:
+        msg: "Patch start email will be sent to: {{ application_owner_emails | join(',') }}"
+
+    - name: Send patch start email to application owner
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port }}"
+        username: "{{ smtp_username }}"
+        password: "{{ smtp_password }}"
+        to: "{{ application_owner_emails | join(',') }}"
+        from: "{{ email_from }}"
+        subject: "Patch Automation Started - {{ cr_number }}"
+        subtype: plain
+        body: |
+          Hello Team,
+
+          Patch automation has started.
+
+          Change Request: {{ cr_number }}
+          Server Source: inventory/server_owner_details.csv
+
+          Servers planned for patching:
+          {% for server in server_rows %}
+          - Server Name: {{ server['Server Name'] }}
+            Instance ID: {{ server['Server ID'] }}
+            Owner: {{ server['Application Owner Details'] }}
+            Details: {{ server['Cluster Details'] }}
+          {% endfor %}
+
+          Automation Steps:
+          - AMI backup before patching
+          - Pre-health check
+          - Server patching
+          - Post-health check
+          - Pre vs Post health comparison
+          - ServiceNow work notes update
+
+          Regards,
+          Ansible Automation Platform
+        secure: starttls
+      delegate_to: localhost
+      become: false
+
+    - name: Update CR work notes - email sent to application owner
+      uri:
+        url: "{{ snow_instance }}/api/now/table/change_request/{{ cr_sys_id }}"
+        method: PATCH
+        user: "{{ snow_username }}"
+        password: "{{ snow_password }}"
+        force_basic_auth: yes
+        validate_certs: yes
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          work_notes: |
+            Patch start email sent to application owner.
+
+            Email Sent To: {{ application_owner_emails | join(',') }}
+            CR Number: {{ cr_number }}
+            Server Source: inventory/server_owner_details.csv
+      delegate_to: localhost
+      become: false
+
+    - name: Update CR work notes - automation started with CSV servers
       uri:
         url: "{{ snow_instance }}/api/now/table/change_request/{{ cr_sys_id }}"
         method: PATCH
@@ -106,9 +172,15 @@
         body:
           work_notes: |
             Ansible patching automation started.
+
             CR fetched dynamically using keyword: {{ snow_cr_keyword }}
             CR Number: {{ cr_number }}
-            Target Servers: {{ target_servers | join(', ') }}
-            Maintenance Window: {{ maintenance_start }} to {{ maintenance_end }}
-            Patch Type: {{ patch_type }}
-            Rollback Required: {{ rollback_required }}
+            Server source: inventory/server_owner_details.csv
+            Total servers loaded from CSV: {{ server_rows | length }}
+
+            Servers:
+            {% for server in server_rows %}
+            - {{ server['Server Name'] }} | Instance ID: {{ server['Server ID'] }} | Owner: {{ server['Application Owner Details'] }} | {{ server['Cluster Details'] }}
+            {% endfor %}
+      delegate_to: localhost
+      become: false

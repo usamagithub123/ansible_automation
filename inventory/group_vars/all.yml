@@ -10,3 +10,9 @@ snow_username: "admin"
 snow_password: "9JSCJPNZqpgj"
 snow_cr_keyword: "AUTOMATED_PATCHING_DEMO"
 ami_wait: false
+# Email notification settings
+smtp_host: "smtp.gmail.com"
+smtp_port: 587
+smtp_username: "usamaashraf540@gmail.com"
+smtp_password: "wdxrtbtczjbyrstr"
+email_from: "usamaashraf540@gmail.com"

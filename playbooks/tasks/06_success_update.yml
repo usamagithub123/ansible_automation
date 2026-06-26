@@ -1,0 +1,25 @@
+---
+- name: Update CR work notes - patch success
+  uri:
+    url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+    method: PATCH
+    user: "{{ snow_username }}"
+    password: "{{ snow_password }}"
+    force_basic_auth: yes
+    validate_certs: yes
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json"
+    body_format: json
+    body:
+      work_notes: |
+        Patching completed successfully.
+
+        Server Name: {{ server_name | default('N/A') }}
+        Target IP: {{ inventory_hostname }}
+        Instance ID: {{ ec2_instance_id }}
+        AMI Backup ID: {{ ami_backup.image_id }}
+        Final Health Status: {{ health_status }}
+        Rollback Required: No
+  delegate_to: localhost
+  become: false

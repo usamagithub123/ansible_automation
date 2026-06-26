@@ -1,0 +1,216 @@
+---
+- block:
+
+    - name: Pre health check - CPU usage percentage
+      shell: "vmstat 1 2 | tail -1 | awk '{print 100 - $15}'"
+      register: pre_cpu
+      changed_when: false
+
+    - name: Pre health check - Memory usage percentage
+      shell: "free | awk '/Mem:/ {printf \"%.2f\", $3/$2 * 100}'"
+      register: pre_memory
+      changed_when: false
+
+    - name: Pre health check - Disk usage percentage for root
+      shell: "df -P / | awk 'NR==2 {gsub(\"%\", \"\", $5); print $5}'"
+      register: pre_disk
+      changed_when: false
+
+    - name: Pre health check - Uptime
+      command: uptime -p
+      register: pre_uptime
+      changed_when: false
+
+    - name: Pre health check - Kernel version
+      command: uname -r
+      register: pre_kernel
+      changed_when: false
+
+    - name: Pre health check - Capture running services
+      shell: "systemctl list-units --type=service --state=running --no-legend | awk '{print $1}' | sort"
+      register: pre_running_services
+      changed_when: false
+
+    - name: Store pre health values
+      set_fact:
+        pre_health:
+          cpu: "{{ pre_cpu.stdout | default('0') }}"
+          memory: "{{ pre_memory.stdout | default('0') }}"
+          disk: "{{ pre_disk.stdout | default('0') }}"
+          uptime: "{{ pre_uptime.stdout | default('N/A') }}"
+          kernel: "{{ pre_kernel.stdout | default('N/A') }}"
+          running_services: "{{ pre_running_services.stdout_lines | default([]) }}"
+          running_services_count: "{{ pre_running_services.stdout_lines | default([]) | length }}"
+
+    - name: Validate PRE health threshold
+      fail:
+        msg: "PRE health check failed. Server is unhealthy before patching."
+      when: >
+        (pre_health.cpu | float) >= 90 or
+        (pre_health.memory | float) >= 90 or
+        (pre_health.disk | int) >= 90
+
+    - name: Update CR work notes - PRE health check passed
+      uri:
+        url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+        method: PATCH
+        user: "{{ snow_username }}"
+        password: "{{ snow_password }}"
+        force_basic_auth: yes
+        validate_certs: yes
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          work_notes: |
+            PRE health check passed.
+
+            Server Name: {{ server_name | default('N/A') }}
+            Target IP: {{ inventory_hostname }}
+            Instance ID: {{ ec2_instance_id | default('N/A') }}
+
+            Health Values:
+            CPU Usage: {{ pre_health.cpu }}%
+            Memory Usage: {{ pre_health.memory }}%
+            Disk Usage: {{ pre_health.disk }}%
+            Uptime: {{ pre_health.uptime }}
+            Kernel Version: {{ pre_health.kernel }}
+
+            Running Services:
+            Running Services Count: {{ pre_health.running_services_count }}
+            Running Services List:
+            {{ pre_health.running_services | join(', ') }}
+
+            Server is healthy before patching.
+            Automation will continue to AMI backup.
+      delegate_to: localhost
+      become: false
+
+  rescue:
+
+    - name: Update CR work notes - PRE health check failed
+      uri:
+        url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+        method: PATCH
+        user: "{{ snow_username }}"
+        password: "{{ snow_password }}"
+        force_basic_auth: yes
+        validate_certs: yes
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          work_notes: |
+            PRE health check failed before patching.
+
+            Server Name: {{ server_name | default('N/A') }}
+            Target IP: {{ inventory_hostname }}
+            Instance ID: {{ ec2_instance_id | default('N/A') }}
+
+            Current Health:
+            CPU Usage: {{ pre_health.cpu | default('N/A') }}%
+            Memory Usage: {{ pre_health.memory | default('N/A') }}%
+            Disk Usage: {{ pre_health.disk | default('N/A') }}%
+            Uptime: {{ pre_health.uptime | default('N/A') }}
+            Kernel Version: {{ pre_health.kernel | default('N/A') }}
+
+            Running Services:
+            Running Services Count: {{ pre_health.running_services_count | default('N/A') }}
+            Running Services List:
+            {{ pre_health.running_services | default([]) | join(', ') }}
+
+            Action:
+            Patching stopped for this server.
+            Rollback is not required because patching was not started.
+            ServiceNow Incident will be created for investigation.
+      delegate_to: localhost
+      become: false
+
+    - name: Create ServiceNow Incident for PRE health check failure
+      uri:
+        url: "{{ snow_instance }}/api/now/table/incident"
+        method: POST
+        user: "{{ snow_username }}"
+        password: "{{ snow_password }}"
+        force_basic_auth: yes
+        validate_certs: yes
+        status_code:
+          - 200
+          - 201
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          short_description: "PRE health check failed before patching on {{ server_name | default(inventory_hostname) }}"
+          description: |
+            PRE health check failed before patching.
+
+            Change Request: {{ hostvars['localhost']['cr_number'] }}
+            Server Name: {{ server_name | default('N/A') }}
+            Target IP: {{ inventory_hostname }}
+            EC2 Instance ID: {{ ec2_instance_id | default('N/A') }}
+            Application Owner: {{ application_owner_email | default('N/A') }}
+
+            Health Values:
+            CPU Usage: {{ pre_health.cpu | default('N/A') }}%
+            Memory Usage: {{ pre_health.memory | default('N/A') }}%
+            Disk Usage: {{ pre_health.disk | default('N/A') }}%
+            Uptime: {{ pre_health.uptime | default('N/A') }}
+            Kernel Version: {{ pre_health.kernel | default('N/A') }}
+
+            Running Services:
+            Running Services Count: {{ pre_health.running_services_count | default('N/A') }}
+            Running Services List:
+            {{ pre_health.running_services | default([]) | join(', ') }}
+
+            Patching was stopped because the server was unhealthy before patching.
+            Rollback is not required because package update was not started.
+          impact: "2"
+          urgency: "2"
+          category: "software"
+          work_notes: |
+            Incident created automatically by Ansible Automation Platform.
+
+            Failure Stage: PRE health check
+            Related Change Request: {{ hostvars['localhost']['cr_number'] }}
+            Failed Server: {{ server_name | default(inventory_hostname) }}
+      delegate_to: localhost
+      become: false
+      register: precheck_incident
+
+    - name: Store PRE health Incident details
+      set_fact:
+        precheck_incident_number: "{{ precheck_incident.json.result.number | default('N/A') }}"
+        precheck_incident_sys_id: "{{ precheck_incident.json.result.sys_id | default('') }}"
+
+    - name: Update CR work notes with PRE health Incident number
+      uri:
+        url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+        method: PATCH
+        user: "{{ snow_username }}"
+        password: "{{ snow_password }}"
+        force_basic_auth: yes
+        validate_certs: yes
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          work_notes: |
+            ServiceNow Incident created for PRE health check failure.
+
+            Change Request: {{ hostvars['localhost']['cr_number'] }}
+            Server Name: {{ server_name | default('N/A') }}
+            Target IP: {{ inventory_hostname }}
+            Incident Number: {{ precheck_incident_number }}
+
+            Patching stopped before AMI backup and package update.
+            Rollback was not triggered because patching did not start.
+      delegate_to: localhost
+      become: false
+
+    - name: Stop patching for this host because PRE health check failed
+      meta: end_host

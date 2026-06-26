@@ -1,0 +1,103 @@
+---
+- name: Update CR work notes - patch or health check failed
+  uri:
+    url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+    method: PATCH
+    user: "{{ snow_username }}"
+    password: "{{ snow_password }}"
+    force_basic_auth: yes
+    validate_certs: yes
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json"
+    body_format: json
+    body:
+      work_notes: |
+        Patching or health check failed on {{ inventory_hostname }}.
+
+        Rollback will be attempted only if AMI backup and EC2 details are available.
+  delegate_to: localhost
+  become: false
+
+- name: Launch rollback instance from AMI
+  amazon.aws.ec2_instance:
+    name: "rollback-{{ hostvars['localhost']['cr_number'] }}-{{ server_name | default(inventory_hostname) }}"
+    image_id: "{{ ami_backup.image_id }}"
+    instance_type: "{{ ec2_instance_type }}"
+    key_name: "{{ ec2_key_name }}"
+    region: "{{ aws_region }}"
+    vpc_subnet_id: "{{ ec2_subnet_id }}"
+    security_groups:
+      - "{{ ec2_security_group_id }}"
+    wait: yes
+    state: running
+    tags:
+      Name: "Rollback-{{ server_name | default(inventory_hostname) }}"
+      ChangeRequest: "{{ hostvars['localhost']['cr_number'] }}"
+      CreatedBy: "Ansible"
+      Purpose: "Rollback"
+  delegate_to: localhost
+  become: false
+  register: rollback_result
+  when:
+    - ami_backup is defined
+    - ami_backup.image_id is defined
+    - ec2_instance_type is defined
+    - ec2_key_name is defined
+    - ec2_subnet_id is defined
+    - ec2_security_group_id is defined
+
+- name: Update CR work notes - rollback completed
+  uri:
+    url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+    method: PATCH
+    user: "{{ snow_username }}"
+    password: "{{ snow_password }}"
+    force_basic_auth: yes
+    validate_certs: yes
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json"
+    body_format: json
+    body:
+      work_notes: |
+        Rollback instance launched.
+
+        Original Server: {{ inventory_hostname }}
+        AMI Used: {{ ami_backup.image_id }}
+        New Instance ID: {{ rollback_result.instances[0].instance_id | default('N/A') }}
+        New Private IP: {{ rollback_result.instances[0].private_ip_address | default('N/A') }}
+        New Public IP: {{ rollback_result.instances[0].public_ip_address | default('N/A') }}
+  delegate_to: localhost
+  become: false
+  when:
+    - rollback_result is defined
+    - not rollback_result.skipped | default(false)
+    - rollback_result.instances is defined
+    - rollback_result.instances | length > 0
+
+- name: Update CR work notes - rollback skipped
+  uri:
+    url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+    method: PATCH
+    user: "{{ snow_username }}"
+    password: "{{ snow_password }}"
+    force_basic_auth: yes
+    validate_certs: yes
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json"
+    body_format: json
+    body:
+      work_notes: |
+        Rollback skipped.
+
+        Server: {{ inventory_hostname }}
+        Reason: AMI backup or required EC2 details were not available.
+  delegate_to: localhost
+  become: false
+  when: rollback_result is not defined or rollback_result.skipped | default(false)
+
+- name: Fail after rollback
+  fail:
+    msg: "Patching failed on {{ inventory_hostname }}. Rollback checked. See ServiceNow work notes for details."

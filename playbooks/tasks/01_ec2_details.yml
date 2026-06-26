@@ -1,0 +1,37 @@
+---
+- name: Set EC2 instance ID from CSV
+  set_fact:
+    ec2_instance_id: "{{ ec2_instance_id_from_csv }}"
+
+- name: Get EC2 instance details using instance ID from CSV
+  amazon.aws.ec2_instance_info:
+    region: "{{ aws_region }}"
+    instance_ids:
+      - "{{ ec2_instance_id }}"
+  delegate_to: localhost
+  become: false
+  register: ec2_info
+
+- name: Fail if EC2 instance not found
+  fail:
+    msg: "No EC2 instance found for Instance ID {{ ec2_instance_id }} in region {{ aws_region }}"
+  when: ec2_info.instances | length == 0
+
+- name: Set EC2 details for rollback
+  set_fact:
+    ec2_subnet_id: "{{ ec2_info.instances[0].subnet_id }}"
+    ec2_instance_type: "{{ ec2_info.instances[0].instance_type }}"
+    ec2_key_name: "{{ ec2_info.instances[0].key_name }}"
+    ec2_security_group_id: "{{ ec2_info.instances[0].security_groups[0].group_id }}"
+
+- name: Show EC2 and CSV details
+  debug:
+    msg:
+      - "Server Name: {{ server_name | default('N/A') }}"
+      - "Target IP: {{ inventory_hostname }}"
+      - "EC2 Instance ID: {{ ec2_instance_id }}"
+      - "Application Owner: {{ application_owner_email | default('N/A') }}"
+      - "Cluster Details: {{ cluster_details | default('N/A') }}"
+      - "Subnet ID: {{ ec2_subnet_id }}"
+      - "Instance Type: {{ ec2_instance_type }}"
+      - "Security Group: {{ ec2_security_group_id }}"

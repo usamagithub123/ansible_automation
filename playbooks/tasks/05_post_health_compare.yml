@@ -1,0 +1,162 @@
+---
+- name: Post health check - CPU usage percentage
+  shell: "vmstat 1 2 | tail -1 | awk '{print 100 - $15}'"
+  register: post_cpu
+  changed_when: false
+
+- name: Post health check - Memory usage percentage
+  shell: "free | awk '/Mem:/ {printf \"%.2f\", $3/$2 * 100}'"
+  register: post_memory
+  changed_when: false
+
+- name: Post health check - Disk usage percentage for root
+  shell: "df -P / | awk 'NR==2 {gsub(\"%\", \"\", $5); print $5}'"
+  register: post_disk
+  changed_when: false
+
+- name: Post health check - Uptime
+  command: uptime -p
+  register: post_uptime
+  changed_when: false
+
+- name: Post health check - Kernel version
+  command: uname -r
+  register: post_kernel
+  changed_when: false
+
+- name: Post health check - Capture running services
+  shell: "systemctl list-units --type=service --state=running --no-legend | awk '{print $1}' | sort"
+  register: post_running_services
+  changed_when: false
+
+- name: Store post health values
+  set_fact:
+    post_health:
+      cpu: "{{ post_cpu.stdout | default('0') }}"
+      memory: "{{ post_memory.stdout | default('0') }}"
+      disk: "{{ post_disk.stdout | default('0') }}"
+      uptime: "{{ post_uptime.stdout | default('N/A') }}"
+      kernel: "{{ post_kernel.stdout | default('N/A') }}"
+      running_services: "{{ post_running_services.stdout_lines | default([]) }}"
+      running_services_count: "{{ post_running_services.stdout_lines | default([]) | length }}"
+
+- name: Compare pre and post health values
+  set_fact:
+    cpu_difference: "{{ (post_health.cpu | float) - (pre_health.cpu | float) }}"
+    memory_difference: "{{ (post_health.memory | float) - (pre_health.memory | float) }}"
+    disk_difference: "{{ (post_health.disk | int) - (pre_health.disk | int) }}"
+
+- name: Compare pre and post running services
+  set_fact:
+    stopped_services_after_patch: "{{ pre_health.running_services | default([]) | difference(post_health.running_services | default([])) }}"
+    new_services_after_patch: "{{ post_health.running_services | default([]) | difference(pre_health.running_services | default([])) }}"
+
+- name: Set final health status
+  set_fact:
+    health_status: >-
+      {{
+        'PASSED'
+        if
+        (post_health.cpu | float) < 90 and
+        (post_health.memory | float) < 90 and
+        (post_health.disk | int) < 90 and
+        (stopped_services_after_patch | length) == 0
+        else
+        'FAILED'
+      }}
+
+- name: Save patching report on target
+  copy:
+    dest: /tmp/patching_result.log
+    content: |
+      Change Request: {{ hostvars['localhost']['cr_number'] }}
+      Server Name: {{ server_name | default('N/A') }}
+      Target IP: {{ inventory_hostname }}
+      Instance ID: {{ ec2_instance_id }}
+      AMI Backup ID: {{ ami_backup.image_id }}
+      Application Owner: {{ application_owner_email | default('N/A') }}
+
+      Patch Status: Completed
+      Health Status: {{ health_status }}
+      Reboot Required: {{ reboot_required.stat.exists }}
+
+      -------- PRE HEALTH CHECK --------
+      CPU Usage: {{ pre_health.cpu }}%
+      Memory Usage: {{ pre_health.memory }}%
+      Disk Usage: {{ pre_health.disk }}%
+      Uptime: {{ pre_health.uptime }}
+      Kernel Version: {{ pre_health.kernel }}
+      Running Services Count: {{ pre_health.running_services_count | default('N/A') }}
+
+      -------- POST HEALTH CHECK --------
+      CPU Usage: {{ post_health.cpu }}%
+      Memory Usage: {{ post_health.memory }}%
+      Disk Usage: {{ post_health.disk }}%
+      Uptime: {{ post_health.uptime }}
+      Kernel Version: {{ post_health.kernel }}
+      Running Services Count: {{ post_health.running_services_count }}
+
+      -------- HEALTH COMPARISON --------
+      CPU Difference: {{ cpu_difference }}%
+      Memory Difference: {{ memory_difference }}%
+      Disk Difference: {{ disk_difference }}%
+
+      -------- SERVICE COMPARISON --------
+      Stopped Services After Patch: {{ stopped_services_after_patch | join(', ') if stopped_services_after_patch | length > 0 else 'None' }}
+      New Services After Patch: {{ new_services_after_patch | join(', ') if new_services_after_patch | length > 0 else 'None' }}
+
+- name: Update CR work notes - post health comparison completed
+  uri:
+    url: "{{ snow_instance }}/api/now/table/change_request/{{ hostvars['localhost']['cr_sys_id'] }}"
+    method: PATCH
+    user: "{{ snow_username }}"
+    password: "{{ snow_password }}"
+    force_basic_auth: yes
+    validate_certs: yes
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json"
+    body_format: json
+    body:
+      work_notes: |
+        Post-health check and comparison completed.
+
+        Server Name: {{ server_name | default('N/A') }}
+        Target IP: {{ inventory_hostname }}
+        Instance ID: {{ ec2_instance_id }}
+        AMI Backup ID: {{ ami_backup.image_id }}
+        Reboot Required: {{ reboot_required.stat.exists }}
+
+        Health Status: {{ health_status }}
+
+        Pre Health:
+        - CPU Usage: {{ pre_health.cpu }}%
+        - Memory Usage: {{ pre_health.memory }}%
+        - Disk Usage: {{ pre_health.disk }}%
+        - Uptime: {{ pre_health.uptime }}
+        - Kernel Version: {{ pre_health.kernel }}
+        - Running Services Count: {{ pre_health.running_services_count | default('N/A') }}
+
+        Post Health:
+        - CPU Usage: {{ post_health.cpu }}%
+        - Memory Usage: {{ post_health.memory }}%
+        - Disk Usage: {{ post_health.disk }}%
+        - Uptime: {{ post_health.uptime }}
+        - Kernel Version: {{ post_health.kernel }}
+        - Running Services Count: {{ post_health.running_services_count }}
+
+        Health Comparison:
+        - CPU Difference: {{ cpu_difference }}%
+        - Memory Difference: {{ memory_difference }}%
+        - Disk Difference: {{ disk_difference }}%
+
+        Service Comparison:
+        - Stopped Services After Patch: {{ stopped_services_after_patch | join(', ') if stopped_services_after_patch | length > 0 else 'None' }}
+        - New Services After Patch: {{ new_services_after_patch | join(', ') if new_services_after_patch | length > 0 else 'None' }}
+  delegate_to: localhost
+  become: false
+
+- name: Fail if post health check or service comparison failed
+  fail:
+    msg: "Post health/service comparison failed on {{ inventory_hostname }}. Rollback will be attempted. Stopped services: {{ stopped_services_after_patch | join(', ') }}"
+  when: health_status == "FAILED"
